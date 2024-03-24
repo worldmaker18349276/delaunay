@@ -7,31 +7,21 @@ use std::{cmp::{min_by_key, Ordering}, collections::BTreeMap};
 /// returns Greater if c is on the left side of the line a -> b,
 /// or Equal if is on the line, or Less if is on the right side.
 fn ori(a: &(f32, f32), b: &(f32, f32), c: &(f32, f32)) -> Ordering {
-    let ab = (b.0 - a.0, b.1 - a.1);
-    let ac = (c.0 - a.0, c.1 - a.1);
-    (ab.0 * ac.1 - ab.1 * ac.0).total_cmp(&0.0)
+    let ca = (a.0 - c.0, a.1 - c.1);
+    let cb = (b.0 - c.0, b.1 - c.1);
+    (ca.0 * cb.1 - ca.1 * cb.0).partial_cmp(&0.0).unwrap()
 }
 
-fn ori_stable(a: &(f32, f32), b: &(f32, f32), c: &(f32, f32)) -> Ordering {
-    // for stability
-    let ord = a.0.total_cmp(&b.0).then_with(|| a.1.total_cmp(&b.1));
-    match ord {
-        Ordering::Equal => panic!("invalid"),
-        Ordering::Less => ori(a, b, c),
-        Ordering::Greater => ori(b, a, c).reverse(),
-    }
-}
-
-/// returns 3 if it is inside the triangle,
+/// returns 3 if p is inside the triangle or on the edge,
 /// or 0, 1, 2 if p is outside this side of the triangle.
 fn triside(a: &(f32, f32), b: &(f32, f32), c: &(f32, f32), p: &(f32, f32)) -> usize {
-    if ori_stable(b, c, p).is_lt() {
+    if ori(b, c, p).is_lt() {
         return 0;
     }
-    if ori_stable(c, a, p).is_lt() {
+    if ori(c, a, p).is_lt() {
         return 1;
     }
-    if ori_stable(a, b, p).is_lt() {
+    if ori(a, b, p).is_lt() {
         return 2;
     }
     3
@@ -58,16 +48,17 @@ fn incirc(a: &(f32, f32), b: &(f32, f32), c: &(f32, f32), d: &(f32, f32)) -> Ord
         - m[0][2] * m[1][1] * m[2][0]
         - m[0][0] * m[1][2] * m[2][1]
         - m[0][1] * m[1][0] * m[2][2];
-    det.total_cmp(&0.0)
+    det.partial_cmp(&0.0).unwrap()
 }
 
 fn hilbert_dist<const R: u32>(x: f32, y: f32) -> u32 {
-    let mut x = ((x * 2.0_f32.powi(R as i32)) as u32).clamp(0, 2_u32.pow(R) - 1);
-    let mut y = ((y * 2.0_f32.powi(R as i32)) as u32).clamp(0, 2_u32.pow(R) - 1);
+    let m = 2_u32.pow(R);
+    let mut x = ((x * m as f32).floor() as u32).clamp(0, m - 1);
+    let mut y = ((y * m as f32).floor() as u32).clamp(0, m - 1);
     let mut result = 0_u32;
     for i in (0..R).rev() {
         let center = 2_u32.pow(i);
-        let quad_area = 2_u32.pow(i).pow(2);
+        let quad_area = center.pow(2);
         match (x < center, y < center) {
             (true, true) => {
                 (x, y) = (y, x);
@@ -137,7 +128,7 @@ pub fn delaunay(points: &[(f32, f32)]) -> Vec<[usize; 3]> {
             // find the nearest triangle in the grid
             let mut t = *min_by_key(
                 grid.range(hash..).next(),
-                grid.range(..hash).last(),
+                grid.range(..hash).next_back(),
                 |e| e.map(|(h, _)| h.abs_diff(hash)).unwrap_or(u32::MAX),
             ).unwrap().1;
             // walk to the point
