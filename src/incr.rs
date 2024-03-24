@@ -9,6 +9,11 @@ use std::{cmp::{min_by_key, Ordering}, collections::BTreeMap};
 fn ori(a: &(f32, f32), b: &(f32, f32), c: &(f32, f32)) -> Ordering {
     let ca = (a.0 - c.0, a.1 - c.1);
     let cb = (b.0 - c.0, b.1 - c.1);
+
+    // deal with infinite points
+    let ca = if ca.0.is_infinite() { (ca.0.signum(), ca.1.signum()) } else { ca };
+    let cb = if cb.0.is_infinite() { (cb.0.signum(), cb.1.signum()) } else { cb };
+
     (ca.0 * cb.1 - ca.1 * cb.0).partial_cmp(&0.0).unwrap()
 }
 
@@ -33,13 +38,28 @@ fn incirc(a: &(f32, f32), b: &(f32, f32), c: &(f32, f32), d: &(f32, f32)) -> Ord
     let da = (a.0 - d.0, a.1 - d.1);
     let db = (b.0 - d.0, b.1 - d.1);
     let dc = (c.0 - d.0, c.1 - d.1);
-    let s_da = da.0 * da.0 + da.1 * da.1;
-    let s_db = db.0 * db.0 + db.1 * db.1;
-    let s_dc = dc.0 * dc.0 + dc.1 * dc.1;
+    let da2 = da.0 * da.0 + da.1 * da.1;
+    let db2 = db.0 * db.0 + db.1 * db.1;
+    let dc2 = dc.0 * dc.0 + dc.1 * dc.1;
+
+    // deal with infinite points
+    let da = if da.0.is_infinite() { (da.0.signum(), da.1.signum()) } else { da };
+    let db = if db.0.is_infinite() { (db.0.signum(), db.1.signum()) } else { db };
+    let dc = if dc.0.is_infinite() { (dc.0.signum(), dc.1.signum()) } else { dc };
+    let (da2, db2, dc2) = if da2.is_infinite() || db2.is_infinite() || dc2.is_infinite() {
+        (
+            if da2.is_infinite() { 1.0 } else { 0.0 },
+            if db2.is_infinite() { 1.0 } else { 0.0 },
+            if dc2.is_infinite() { 1.0 } else { 0.0 },
+        )
+    } else {
+        (da2, db2, dc2)
+    };
+
     let m = [
-        [da.0, da.1, s_da],
-        [db.0, db.1, s_db],
-        [dc.0, dc.1, s_dc],
+        [da.0, da.1, da2],
+        [db.0, db.1, db2],
+        [dc.0, dc.1, dc2],
     ];
     let det =
         m[0][0] * m[1][1] * m[2][2]
@@ -80,8 +100,17 @@ fn hilbert_dist<const R: u32>(x: f32, y: f32) -> u32 {
     result
 }
 
+// corner points
+// const CORNER1: (f32, f32) = (-1e5, -1e5);
+// const CORNER2: (f32, f32) = ( 1e5, -1e5);
+// const CORNER3: (f32, f32) = ( 1e5,  1e5);
+// const CORNER4: (f32, f32) = (-1e5,  1e5);
+const CORNER1: (f32, f32) = (-f32::INFINITY, -f32::INFINITY);
+const CORNER2: (f32, f32) = ( f32::INFINITY, -f32::INFINITY);
+const CORNER3: (f32, f32) = ( f32::INFINITY,  f32::INFINITY);
+const CORNER4: (f32, f32) = (-f32::INFINITY,  f32::INFINITY);
+
 const MIN_WIDTH: f32 = 1e-5;
-const MARGIN_RATIO: f32 = 1e-3;
 const HASH_SIZE: u32 = 8;
 
 pub fn delaunay(points: &[(f32, f32)]) -> Vec<[usize; 3]> {
@@ -89,18 +118,15 @@ pub fn delaunay(points: &[(f32, f32)]) -> Vec<[usize; 3]> {
     
     let len = points.len();
     let points = {
+        // normalize
         let x_min = points.iter().map(|p| p.0).reduce(|a, b| a.min(b)).unwrap_or(0.0);
         let y_min = points.iter().map(|p| p.1).reduce(|a, b| a.min(b)).unwrap_or(0.0);
         let x_max = points.iter().map(|p| p.0).reduce(|a, b| a.max(b)).unwrap_or(0.0);
         let y_max = points.iter().map(|p| p.1).reduce(|a, b| a.max(b)).unwrap_or(0.0);
-        let width = (x_max - x_min).max(y_max - y_min);
-        let margin = width.max(MIN_WIDTH) * MARGIN_RATIO;
-        let x_min = x_min - margin;
-        let y_min = y_min - margin;
-        let width = width + 2.0 * margin;
+        let width = (x_max - x_min).max(y_max - y_min).max(MIN_WIDTH);
         points.iter()
             .map(|&(x, y)| ((x - x_min) / width, (y - y_min) / width))
-            .chain([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
+            .chain([CORNER1, CORNER2, CORNER3, CORNER4])
             .collect::<Vec<_>>()
     };
     let hashes = points.iter().map(|&(x, y)| hilbert_dist::<HASH_SIZE>(x, y)).collect::<Vec<_>>();
