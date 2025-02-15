@@ -1,4 +1,4 @@
-use std::{collections::{BTreeSet, HashSet}, fs::File, io::{self, Write}};
+use std::{collections::HashSet, fs::File, io::{self, Write}};
 
 use ordered_float::NotNan;
 
@@ -34,7 +34,7 @@ fn timing<R, F: FnOnce() -> R>(f: F) -> R {
     res
 }
 
-const POINT_COUNT: usize = 100;
+const POINT_COUNT: usize = 100_000;
 
 fn main() {
     // prepare random, distinct, finite points
@@ -52,6 +52,7 @@ fn main() {
     println!("point count = {}", points.len());
 
     println!("run delaunay...");
+    // let triangles = timing(|| sweep::delaunay(&points));
     let triangles = timing(|| incr::delaunay(&points));
 
     println!("save to test.ply...");
