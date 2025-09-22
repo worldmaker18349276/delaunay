@@ -122,22 +122,26 @@ const CORNER4: Point = (-f32::INFINITY,  f32::INFINITY);
 const MIN_WIDTH: f32 = 1e-5;
 const HASH_SIZE: u32 = 8;
 
+pub type VIndex = usize;
+pub type EIndex = usize;
+pub type FIndex = usize;
+
 struct Delaunay {
     points: Vec<Point>,
     // [a_index, b_index, c_index]
-    triangles: Vec<[usize; 3]>,
+    triangles: Vec<[VIndex; 3]>,
     // [bc_adj, ca_adj, ab_adj],  adj = tri_index * 3 + side or BD for unmovable edge
-    adjacencies: Vec<[usize; 3]>,
+    adjacencies: Vec<[EIndex; 3]>,
     // (bottom-left point, width)
     bbox: (Point, f32),
     // point_index -> hash
     hashes: Vec<u32>,
     // hash -> tri_index,  each hash indicates a grid region
-    grid: BTreeMap<u32, usize>,
+    grid: BTreeMap<u32, FIndex>,
 }
 
 impl Delaunay {
-    const BD: usize = usize::MAX;
+    const BD: EIndex = usize::MAX;
 
     pub fn new(bbox: (Point, f32), capacity: usize) -> Self {
         let mut res = Self {
@@ -180,33 +184,80 @@ impl Delaunay {
         hilbert_dist::<HASH_SIZE>((x - x0) / w, (y - y0) / w)
     }
 
-    pub fn add(&mut self, point: &Point) {
+    // find triangle on this point (Ok), or the triangle contains points[i] (Err)
+    pub fn find(&self, p: VIndex) -> Result<FIndex, FIndex> {
+        let point = &self.points[p];
+        let hash = self.hashes[p];
+        // find the nearest triangle in the grid
+        let mut t = *min_by_key(
+            self.grid.range(hash..).next(),
+            self.grid.range(..hash).next_back(),
+            |e| e.map(|(h, _)| h.abs_diff(hash)).unwrap_or(u32::MAX),
+        ).unwrap().1;
+        // walk to the point
+        loop {
+            let [a, b, c] = self.triangles[t];
+            if [a, b, c].contains(&p) { return Ok(t); }
+            let side = triside(&self.points[a], &self.points[b], &self.points[c], point);
+            if let Triside::Inside = side { break; }
+            let edge = self.adjacencies[t][side as usize];
+            if edge == Self::BD {
+                panic!("invalid");
+            }
+            t = edge / 3;
+        }
+        Err(t)
+    }
+
+    pub fn flip(&mut self, e: EIndex) {
+        let (tri, side) = (e / 3, e % 3);
+        let e_ = self.adjacencies[tri][side];
+        assert!(e_ != Self::BD);
+        let (tri_, side_) = (e_ / 3, e_ % 3);
+        
+        let a = self.triangles[tri][(side+0)%3];
+        let b = self.triangles[tri][(side+1)%3];
+        let c = self.triangles[tri_][(side_+0)%3];
+        let d = self.triangles[tri_][(side_+1)%3];
+
+        let da = self.adjacencies[tri][(side+1)%3];
+        let ab = self.adjacencies[tri][(side+2)%3];
+        let bc = self.adjacencies[tri_][(side_+1)%3];
+        let cd = self.adjacencies[tri_][(side_+2)%3];
+
+        // flip triangles
+        self.triangles[tri][(side+0)%3] = b;
+        self.triangles[tri][(side+1)%3] = c;
+        self.triangles[tri][(side+2)%3] = a;
+        self.triangles[tri_][(side_+0)%3] = d;
+        self.triangles[tri_][(side_+1)%3] = a;
+        self.triangles[tri_][(side_+2)%3] = c;
+
+        self.adjacencies[tri][(side+1)%3] = ab;
+        self.adjacencies[tri][(side+2)%3] = bc;
+        self.adjacencies[tri_][(side_+1)%3] = cd;
+        self.adjacencies[tri_][(side_+2)%3] = da;
+
+        // fix adjacencies
+        if ab != Self::BD { self.adjacencies[ab/3][ab%3] = tri*3+(side+1)%3; }
+        if bc != Self::BD { self.adjacencies[bc/3][bc%3] = tri*3+(side+2)%3; }
+        if cd != Self::BD { self.adjacencies[cd/3][cd%3] = tri_*3+(side_+1)%3; }
+        if da != Self::BD { self.adjacencies[da/3][da%3] = tri_*3+(side_+2)%3; }
+
+        // update grid
+        // self.grid.insert(self.hashes[a], tri);
+        self.grid.insert(self.hashes[b], tri);
+        // self.grid.insert(self.hashes[c], tri_);
+        self.grid.insert(self.hashes[d], tri_);
+    }
+
+    pub fn add(&mut self, point: &Point) -> VIndex {
         let hash = self.hash(point);
         let p = self.points.len();
         self.points.push(*point);
         self.hashes.push(hash);
 
-        // find triangle contains points[i]
-        let t = {
-            // find the nearest triangle in the grid
-            let mut t = *min_by_key(
-                self.grid.range(hash..).next(),
-                self.grid.range(..hash).next_back(),
-                |e| e.map(|(h, _)| h.abs_diff(hash)).unwrap_or(u32::MAX),
-            ).unwrap().1;
-            // walk to the point
-            loop {
-                let [a, b, c] = self.triangles[t];
-                let side = triside(&self.points[a], &self.points[b], &self.points[c], point);
-                if let Triside::Inside = side { break; }
-                let edge = self.adjacencies[t][side as usize];
-                if edge == Self::BD {
-                    panic!("invalid");
-                }
-                t = edge / 3;
-            }
-            t
-        };
+        let t = self.find(p).unwrap_err();
 
         // divide triangle
         let (e1, e2, e3) = {
@@ -251,40 +302,17 @@ impl Delaunay {
             }
 
             // flip triangle
-            
-            let a = self.triangles[tri][side];
-            let b = self.triangles[tri][(side + 1) % 3];
-            let c = self.triangles[tri_][side_];
-            let d = self.triangles[tri_][(side_ + 1) % 3];
-
-            let da = self.adjacencies[tri][(side + 1) % 3];
-            let ab = self.adjacencies[tri][(side + 2) % 3];
-            let bc = self.adjacencies[tri_][(side_ + 1) % 3];
-            let cd = self.adjacencies[tri_][(side_ + 2) % 3];
-
-            // flip triangles
-            self.triangles[tri] = [a, b, c];
-            self.triangles[tri_] = [c, d, a];
-            self.adjacencies[tri] = [bc, tri_*3+1, ab];
-            self.adjacencies[tri_] = [da, tri*3+1, cd];
-            // fix adjacencies
-            if ab != Self::BD { self.adjacencies[ab/3][ab%3] = tri*3+2; }
-            if bc != Self::BD { self.adjacencies[bc/3][bc%3] = tri*3+0; }
-            if cd != Self::BD { self.adjacencies[cd/3][cd%3] = tri_*3+2; }
-            if da != Self::BD { self.adjacencies[da/3][da%3] = tri_*3+0; }
-            // update grid
-            self.grid.insert(self.hashes[a], tri);
-            self.grid.insert(self.hashes[b], tri);
-            self.grid.insert(self.hashes[c], tri_);
-            self.grid.insert(self.hashes[d], tri_);
+            self.flip(e);
 
             // add flipped triangles to stack
-            stack.push(tri*3+0);
-            stack.push(tri_*3+2);
+            stack.push(tri*3+(side+2)%3);
+            stack.push(tri_*3+(side_+1)%3);
         }
+
+        p
     }
 
-    pub fn get_triangles(&self) -> Vec<[usize; 3]> {
+    pub fn get_triangles(&self) -> Vec<[VIndex; 3]> {
         // remove boundary
         self.triangles.iter()
             .cloned()
@@ -294,7 +322,7 @@ impl Delaunay {
     }
 }
 
-pub fn delaunay(points: &[Point]) -> Vec<[usize; 3]> {
+pub fn delaunay(points: &[Point]) -> Vec<[VIndex; 3]> {
     assert!(points.iter().all(|&(x, y)| x.is_finite() && y.is_finite()));
     let bbox = {
         let x_min = points.iter().map(|p| p.0).reduce(|a, b| a.min(b)).unwrap_or(0.0);
